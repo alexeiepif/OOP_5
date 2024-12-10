@@ -19,9 +19,9 @@ from colorama import Fore, Style
 
 
 class TreeNode:
-    def __init__(self, state: Path, children: list["TreeNode"] = []) -> None:
+    def __init__(self, state: Path) -> None:
         self.state = state
-        self.children = children
+        self.children: list["TreeNode"] = []
 
     def add_child(self, child: "TreeNode") -> None:
         bisect.insort(self.children, child)
@@ -31,6 +31,11 @@ class TreeNode:
 
     def __len__(self) -> int:
         return len(self.children)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TreeNode):
+            return NotImplemented
+        return self.state == other.state and self.children == other.children
 
     def __lt__(self, other: "TreeNode") -> bool:
         return len(self) < len(other)
@@ -44,96 +49,66 @@ class Tree:
         self.dir_count = 0
         self.file_count = 0
         self.full = False
-        self.generate_tree(self.root)
+        self.generate_tree(self.root, 0)
 
     def expand(self, node: TreeNode) -> None:
         try:
             for child in node.state.iterdir():
-                if (not self.args.a) and (
-                    child.name.startswith(".")
-                    or child.name.startswith("__")
-                    or child.name.startswith("..")
-                ):
+                if not self.__should_include(child):
                     continue
-                if self.args.d and child.is_file():
-                    continue
-                if child.is_dir():
-                    self.dir_count += 1
-                else:
-                    self.file_count += 1
-                if self.dir_count + self.file_count >= 200:
-                    self.full = True
+                self.__increment_counts(child)
+                if self.full:
                     break
-                node.add_child(TreeNode(child, []))
-
+                node.add_child(TreeNode(child))
         except PermissionError:
             pass
 
-    def generate_tree(self, node: TreeNode, level: int = 0) -> None:
-        """Рекурсивно генерирует дерево, начиная с заданного узла."""
-        if self.dir_count + self.file_count >= 200:
-            self.full = True
-            return
-        if level == self.args.max_depth:
+    def generate_tree(self, node: TreeNode, level: int) -> None:
+        if self.full or level == self.args.max_depth:
             return
         self.expand(node)
-        if self.full:
-            return
         for child in node.children:
             if child.state.is_dir():
                 self.generate_tree(child, level + 1)
 
-    def __print_tree(self, node: TreeNode, level: int = 0, branch: str = "") -> str:
-        buffer = StringIO()
-        sw = True
+    def __should_include(self, child: Path) -> bool:
+        if not self.args.a and child.name.startswith((".", "__")):
+            return False
+        if self.args.d and child.is_file():
+            return False
+        return True
 
+    def __increment_counts(self, child: Path) -> None:
+        if child.is_dir():
+            self.dir_count += 1
+        else:
+            self.file_count += 1
+        if self.dir_count + self.file_count >= 200:
+            self.full = True
+
+    def __format_tree(self, node: TreeNode, branch: str = "") -> str:
+        result = StringIO()
         for i, child in enumerate(node.children):
-            color = (
-                Fore.GREEN
-                if not child.children and child.state.is_file()
-                else Fore.YELLOW
-            )
+            item = f"{branch}{'└── ' if i == len(node.children) - 1 else '├── '}"
             name = (
                 child.state.name
                 if not self.args.f
                 else child.state.relative_to(self.directory)
             )
-            if i == len(node) - 1:
-                sw = False
-                item = f"{branch}└── "
-            else:
-                item = f"{branch}├── "
-            if self.args.i:
-                item = ""
-            buffer.write(f"{item}{color}{name}{Style.RESET_ALL}\n")
-
-            if not self.args.i:
-                new_branch = f"{branch}│   " if sw else f"{branch}    "
-            else:
-                new_branch = ""
-            buffer.write(self.__print_tree(child, level + 1, new_branch))
-
-        result = buffer.getvalue()
-        buffer.close()
-        return result
+            color = Fore.GREEN if child.state.is_file() else Fore.YELLOW
+            result.write(f"{item}{color}{name}{Style.RESET_ALL}\n")
+            new_branch = f"{branch}{'    ' if i == len(node.children) - 1 else '│   '}"
+            result.write(self.__format_tree(child, new_branch))
+        return result.getvalue()
 
     def __str__(self) -> str:
-        buffer = StringIO()
-        buffer.write(f"{Fore.BLUE}{self.root.state.name}{Style.RESET_ALL}\n")
-        buffer.write(self.__print_tree(self.root))
-        buffer.write("\n")
-        if self.full and (self.dir_count + self.file_count < 200):
-            buffer.write("Вывод ограничен временем\n")
-        elif self.full:
-            buffer.write("Вывод ограничен по длине: 200 элементов\n")
-        buffer.write(
-            f"{Fore.YELLOW}Directories: {self.dir_count}, "
-            f"{Fore.GREEN}Files: {self.file_count}{Style.RESET_ALL}"
-        )
-
-        result = buffer.getvalue()
-        buffer.close()
-        return result
+        header = f"{Fore.BLUE}{self.root.state.name}{Style.RESET_ALL}\n"
+        body = self.__format_tree(self.root)
+        footer = f"\n{Fore.YELLOW}Directories: {self.dir_count}, "
+        footer += f"{Fore.GREEN}Files: {self.file_count}{Style.RESET_ALL}"
+        if self.full:
+            footer += f"{Fore.RED}\nOutput limited to 200 elements.{Style.RESET_ALL}"
+        return header + body + footer
 
 
 def main(command_line: list[str] | None = None) -> None:
